@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Mood Vomit AR (Fixed Text)</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+        #container { position: relative; width: 100vw; height: 100vh; }
+        
+        /* 视频和画布保持镜像，为了让操作符合直觉 */
+        video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+
+        #input-container {
+            position: absolute;
+            top: 10%;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            text-align: center;
+            width: 80%;
+        }
+
+        input {
+            background: transparent;
+            border: none;
+            color: rgba(255, 255, 255, 0.3);
+            padding: 10px;
+            width: 100%;
+            font-size: 20px;
+            font-family: 'Courier New', Courier, monospace;
+            outline: none;
+            text-align: center;
+            text-shadow: 0 0 5px rgba(255,255,255,0.1);
+        }
+        
+        #hint {
+            color: rgba(255, 255, 255, 0.2);
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.5); font-size: 18px; z-index: 20; pointer-events: none;
+        }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<div id="container">
+    <div id="loading">... 初始化嘴部识别模型 ...</div>
+    <div id="input-container">
+        <input type="text" id="textInput" value="Wanna sleep dont want to go work so hungry so tired so sleepy so exhausted too boring getting shit up" autocomplete="off">
+        <div id="hint">OPEN YOUR MOUTH TO SPEAK</div>
+    </div>
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+</div>
+
+<script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const inputField = document.getElementById('textInput');
+    const loadingText = document.getElementById('loading');
+
+    function resize() {
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Matter.js 设置
+    const Engine = Matter.Engine,
+          Runner = Matter.Runner,
+          Bodies = Matter.Bodies,
+          Composite = Matter.Composite,
+          Body = Matter.Body;
+
+    const engine = Engine.create();
+    const world = engine.world;
+
+    const ground = Bodies.rectangle(window.innerWidth/2, window.innerHeight + 100, window.innerWidth * 2, 200, { isStatic: true });
+    const leftWall = Bodies.rectangle(-100, window.innerHeight/2, 200, window.innerHeight * 2, { isStatic: true });
+    const rightWall = Bodies.rectangle(window.innerWidth + 100, window.innerHeight/2, 200, window.innerHeight * 2, { isStatic: true });
+    
+    Composite.add(world, [ground, leftWall, rightWall]);
+
+    const handCollider = Bodies.circle(-500, -500, 50, { isStatic: true, render: { visible: false } });
+    Composite.add(world, handCollider);
+
+    const runner = Runner.create();
+    Runner.run(runner, engine);
+
+    let mouthPos = { x: 0, y: 0 };
+    let isMouthOpen = false;
+    let wordList = [];
+    let currentWordIndex = 0;
+    let spawnTimer = 0;
+    
+    function updateWordList() {
+        const text = inputField.value.trim();
+        wordList = text ? text.split(/\s+/) : ["Empty"];
+    }
+    updateWordList();
+    inputField.addEventListener('input', updateWordList);
+
+    function spawnWord(text, x, y) {
+        const size = 20 + Math.random() * 10;
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 5 + Math.random() * 5;
+        
+        const velocity = {
+            x: Math.cos(angle) * speed,
+            y: Math.sin(angle) * speed - 5
+        };
+
+        const body = Bodies.circle(x, y, size * 0.6, { 
+            restitution: 0.6,
+            friction: 0.1,
+            label: 'word',
+            angle: Math.random() * 0.5
+        });
+        
+        Body.setVelocity(body, velocity);
+        body.text = text;
+        Composite.add(world, body);
+    }
+
+    // MediaPipe
+    const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+    faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    faceMesh.onResults(onFaceResults);
+
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    hands.onResults(onHandResults);
+
+    function onFaceResults(results) {
+        loadingText.style.display = 'none';
+        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+            const landmarks = results.multiFaceLandmarks[0];
+            const upperLip = landmarks[13];
+            const lowerLip = landmarks[14];
+            const faceTop = landmarks[10];
+            const faceBottom = landmarks[152];
+
+            mouthPos = {
+                x: (upperLip.x + lowerLip.x) / 2 * canvasElement.width,
+                y: (upperLip.y + lowerLip.y) / 2 * canvasElement.height
+            };
+
+            const mouthOpenDist = Math.hypot(upperLip.x - lowerLip.x, upperLip.y - lowerLip.y);
+            const faceHeight = Math.hypot(faceTop.x - faceBottom.x, faceTop.y - faceBottom.y);
+            
+            isMouthOpen = (mouthOpenDist / faceHeight > 0.05);
+        }
+        drawScene(results.image);
+    }
+
+    function onHandResults(results) {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const indexFinger = results.multiHandLandmarks[0][8];
+            Body.setPosition(handCollider, { 
+                x: indexFinger.x * canvasElement.width, 
+                y: indexFinger.y * canvasElement.height 
+            });
+        } else {
+            Body.setPosition(handCollider, { x: -500, y: -500 });
+        }
+    }
+
+    // 渲染循环
+    function drawScene(videoImage) {
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        
+        if(videoImage) {
+            canvasCtx.globalAlpha = 0.7;
+            canvasCtx.drawImage(videoImage, 0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.globalAlpha = 1.0;
+        }
+
+        if (isMouthOpen && wordList.length > 0) {
+            spawnTimer++;
+            if (spawnTimer > 4) {
+                const word = wordList[currentWordIndex];
+                spawnWord(word, mouthPos.x, mouthPos.y);
+                currentWordIndex = (currentWordIndex + 1) % wordList.length;
+                spawnTimer = 0;
+            }
+        }
+
+        const bodies = Composite.allBodies(world);
+        if (bodies.length > 250) { 
+             Composite.clear(world, false);
+             Composite.add(world, [ground, leftWall, rightWall, handCollider]);
+        }
+
+        canvasCtx.textAlign = "center";
+        canvasCtx.textBaseline = "middle";
+        
+        bodies.forEach(body => {
+            if (body.label === 'word') {
+                canvasCtx.save(); // 保存当前状态
+                
+                // 1. 移动到物体位置
+                canvasCtx.translate(body.position.x, body.position.y);
+                // 2. 旋转物体角度
+                canvasCtx.rotate(body.angle);
+                
+                // 3. 【关键修复】水平缩放 -1，把文字翻转回来！
+                canvasCtx.scale(-1, 1); 
+
+                canvasCtx.font = "bold 24px Courier New";
+                canvasCtx.fillStyle = "rgba(255, 255, 255, 0.9)";
+                canvasCtx.shadowBlur = 10;
+                canvasCtx.shadowColor = "rgba(255, 255, 255, 0.5)";
+                
+                canvasCtx.fillText(body.text, 0, 0);
+                
+                canvasCtx.restore(); // 恢复状态，避免影响下一个物体
+            }
+        });
+
+        // 绘制手部交互圈 (也要处理翻转问题，如果不处理，圆圈没事，但如果有文字提示就会反)
+        const handPos = handCollider.position;
+        if (handPos.x > 0) {
+            canvasCtx.beginPath();
+            canvasCtx.arc(handPos.x, handPos.y, 20, 0, 2 * Math.PI);
+            canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+            canvasCtx.lineWidth = 2;
+            canvasCtx.stroke();
+        }
+
+        canvasCtx.restore();
+    }
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => {
+            await faceMesh.send({image: videoElement});
+            await hands.send({image: videoElement});
+        },
+        width: 1280,
+        height: 720
+    });
+    camera.start();
+
+</script>
+</body>
+</html>

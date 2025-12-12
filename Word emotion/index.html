@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Emotional AR Portal</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: #000000;
+            color: #ffffff;
+            font-family: 'Courier New', Courier, monospace;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 3em;
+            margin-bottom: 50px;
+            color: rgba(255, 255, 255, 0.9);
+            text-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
+        }
+
+        .container {
+            display: flex;
+            gap: 40px;
+        }
+
+        .link-box {
+            width: 250px;
+            height: 250px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-decoration: none;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 1.5em;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(5px);
+            background: rgba(255, 255, 255, 0.05);
+            box-shadow: 0 0 5px rgba(255, 255, 255, 0.1);
+        }
+
+        .link-box:hover {
+            border-color: #00ffff;
+            color: #00ffff;
+            box-shadow: 0 0 20px #00ffff;
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body>
+
+    <h1>SELECT YOUR EMOTION</h1>
+    
+    <div class="container">
+        <a href="tears.html" class="link-box">
+            <span>Being depressed</span>
+        </a>
+        
+        <a href="vomit.html" class="link-box">
+            <span>Being anxiety</span>
+        </a>
+    </div>
+
+</body>
+</html>

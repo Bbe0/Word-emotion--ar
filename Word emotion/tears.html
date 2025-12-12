@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Tpye Tears AR Experience</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+        #container { position: relative; width: 100vw; height: 100vh; }
+        
+        /* 视频和画布重叠 */
+        video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+
+        /* 输入框容器 */
+        #input-container {
+            position: absolute;
+            top: 8%; /* 稍微往下一点 */
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            text-align: center;
+            width: 60%;
+        }
+
+        /* 修改后的输入框样式：无边框、低透明度白字 */
+        input {
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1); /* 极淡的底线提示位置，不需要可删 */
+            color: rgba(255, 255, 255, 0.8); /* 低透明度白色 */
+            padding: 10px;
+            width: 100%;
+            font-size: 18px;
+            font-family: 'Courier New', Courier, monospace;
+            outline: none;
+            text-align: center;
+            transition: 0.3s;
+        }
+
+        input:focus {
+            color: rgba(255, 255, 255, 0.6); /* 输入时稍微亮一点 */
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        input::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+            letter-spacing: 2px;
+        }
+        
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.5); font-size: 18px; z-index: 20; pointer-events: none;
+        }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<div id="container">
+    <div id="loading">... 初始化视觉系统 ...</div>
+    <div id="input-container">
+        <input type="text" id="textInput" placeholder="TYPE HERE" autocomplete="off">
+    </div>
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+</div>
+
+<script>
+    // --- 1. 初始化设置 ---
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const inputField = document.getElementById('textInput');
+    const loadingText = document.getElementById('loading');
+
+    function resize() {
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- 2. 物理引擎 Matter.js 设置 ---
+    const Engine = Matter.Engine,
+          Runner = Matter.Runner,
+          Bodies = Matter.Bodies,
+          Composite = Matter.Composite,
+          Body = Matter.Body;
+
+    const engine = Engine.create();
+    const world = engine.world;
+
+    // 地面和墙壁
+    const ground = Bodies.rectangle(window.innerWidth/2, window.innerHeight + 50, window.innerWidth, 100, { isStatic: true });
+    const leftWall = Bodies.rectangle(-50, window.innerHeight/2, 100, window.innerHeight, { isStatic: true });
+    const rightWall = Bodies.rectangle(window.innerWidth + 50, window.innerHeight/2, 100, window.innerHeight, { isStatic: true });
+    
+    Composite.add(world, [ground, leftWall, rightWall]);
+
+    // 手部交互点
+    const handCollider = Bodies.circle(-100, -100, 40, { 
+        isStatic: true,
+        render: { visible: false } 
+    });
+    Composite.add(world, handCollider);
+
+    const runner = Runner.create();
+    Runner.run(runner, engine);
+
+    // --- 3. 状态管理 ---
+    let leftEyePos = { x: 0, y: 0 };
+    let rightEyePos = { x: 0, y: 0 };
+    let faceDetected = false;
+    let textQueue = []; 
+    let dropTimer = 0;
+    
+    // --- 4. 交互逻辑 ---
+    inputField.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && inputField.value.trim() !== "") {
+            const text = inputField.value;
+            inputField.value = "";
+            inputField.blur(); // 输入完失去焦点，隐藏键盘
+            // 添加到掉落队列
+            for(let char of text) {
+                textQueue.push(char);
+            }
+            // 重新聚焦以便继续输入(如果需要连续输入可保留，不需要可删)
+            setTimeout(() => inputField.focus(), 100); 
+        }
+    });
+
+    function spawnTear(char, x, y) {
+        const size = 18 + Math.random() * 6;
+        const tearBody = Bodies.circle(x, y, 6, { // 物理体积稍微小一点，避免字距太宽
+            restitution: 0,
+            friction: 0.3,
+            label: 'tear',
+             inertia: Infinity      // 锁定旋转
+        });
+
+         tearBody.char = char;
+    // 保证初始角度为 0
+    tearBody.angle = 0;
+    Composite.add(world, tearBody);
+    }
+
+    // --- 5. MediaPipe AI 逻辑 ---
+    const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+    faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    faceMesh.onResults(onFaceResults);
+
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    hands.onResults(onHandResults);
+
+    function onFaceResults(results) {
+        loadingText.style.display = 'none';
+        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+            faceDetected = true;
+            const landmarks = results.multiFaceLandmarks[0];
+            // 左眼: 159, 右眼: 386
+            const leftEye = landmarks[159];
+            const rightEye = landmarks[386];
+
+            leftEyePos = { x: leftEye.x * canvasElement.width, y: leftEye.y * canvasElement.height };
+            rightEyePos = { x: rightEye.x * canvasElement.width, y: rightEye.y * canvasElement.height };
+        } else {
+            faceDetected = false;
+        }
+        drawScene(results.image);
+    }
+
+    function onHandResults(results) {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const landmarks = results.multiHandLandmarks[0];
+            const indexFinger = landmarks[8]; // 食指指尖
+            Body.setPosition(handCollider, { 
+                x: indexFinger.x * canvasElement.width, 
+                y: indexFinger.y * canvasElement.height 
+            });
+        } else {
+            Body.setPosition(handCollider, { x: -500, y: -500 });
+        }
+    }
+
+    // --- 6. 渲染循环 ---
+    function drawScene(videoImage) {
+        // 清空画布
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        
+        // 绘制背景视频 (如果不想要彩色画面，可以在这里加滤镜)
+        if(videoImage) {
+            // 降低视频亮度，凸显白色文字
+            canvasCtx.globalAlpha = 0.8; 
+            canvasCtx.drawImage(videoImage, 0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.globalAlpha = 1.0;
+        }
+
+        // 处理掉落
+        if (faceDetected && textQueue.length > 0) {
+            dropTimer++;
+            if (dropTimer > 1) { // 加快一点掉落速度
+                const char = textQueue.shift();
+                const eye = Math.random() > 0.5 ? leftEyePos : rightEyePos;
+                spawnTear(char, eye.x, eye.y + 15);
+                dropTimer = 0;
+            }
+        }
+
+        // 自动清零逻辑
+        const bodies = Composite.allBodies(world);
+        if (bodies.length > 350) { // 阈值
+             Composite.clear(world, false);
+             Composite.add(world, [ground, leftWall, rightWall, handCollider]);
+        }
+
+        // 绘制文字
+        canvasCtx.textAlign = "center";
+        canvasCtx.textBaseline = "middle";
+        
+        bodies.forEach(body => {
+            if (body.label === 'tear') {
+                        canvasCtx.save();  // 用 save/restore 比手动 rotate 回去更干净
+        
+                canvasCtx.translate(body.position.x, body.position.y);
+                
+                canvasCtx.font = "bold 16px Courier New";
+                
+                // 统一白色风格
+                canvasCtx.fillStyle = "#FFFFFF"; 
+                // 添加白色发光效果
+            
+                 canvasCtx.textAlign = "center";
+                  canvasCtx.textBaseline = "middle";
+                canvasCtx.fillText(body.char, 0, 0);
+                
+                
+                // 重置阴影以防影响下一帧性能
+                canvasCtx.shadowBlur = 0;
+                
+                canvasCtx.rotate(-body.angle);
+                canvasCtx.translate(-body.position.x, -body.position.y);
+                
+
+            }
+        });
+
+        // 绘制手部交互点（淡淡的白色光圈，提示用户手在哪）
+        const handPos = handCollider.position;
+        if (handPos.x > 0) {
+            canvasCtx.beginPath();
+            canvasCtx.arc(handPos.x, handPos.y, 15, 0, 2 * Math.PI);
+            canvasCtx.fillStyle = "rgba(255, 255, 255, 0.1)";
+            canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+            canvasCtx.fill();
+            canvasCtx.stroke();
+        }
+
+        canvasCtx.restore();
+    }
+
+    // --- 7. 启动 ---
+    const camera = new Camera(videoElement, {
+        onFrame: async () => {
+            await faceMesh.send({image: videoElement});
+            await hands.send({image: videoElement});
+        },
+        width: 1280,
+        height: 720
+    });
+    camera.start();
+
+</script>
+</body>
+</html>
